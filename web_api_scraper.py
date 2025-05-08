@@ -59,58 +59,29 @@ def scrape_stock_data():
         # Current time for countdown calculation
         current_time = datetime.now()
         
-        # Extract reset intervals from JavaScript (if available)
-        script_tag = soup.find('script', string=re.compile(r'updateCountdowns'))
-        reset_intervals = {'gear': 300, 'egg': 43200, 'seeds': 300}  # Default: Gear/Seeds 5 min, Egg 12 hours
+        # Calculate reset times based on website's JavaScript logic
+        reset_intervals = {'gear': 300, 'egg': 1800, 'seeds': 300}  # Gear/Seeds: 5 min, Egg: 30 min
         next_resets = {}
         
-        if script_tag:
-            script_content = script_tag.string
-            # Look for reset intervals or timestamps (e.g., gearReset = 300000; for 5 minutes in milliseconds)
-            reset_patterns = {
-                'gear': r'gearReset\s*=\s*(\d+)\s*;',  # In milliseconds
-                'egg': r'eggReset\s*=\s*(\d+)\s*;',   # In milliseconds
-                'seeds': r'seedsReset\s*=\s*(\d+)\s*;' # In milliseconds
-            }
-            
-            for stock_type, pattern in reset_patterns.items():
-                match = re.search(pattern, script_content)
-                if match:
-                    reset_ms = int(match.group(1))
-                    reset_intervals[stock_type] = reset_ms // 1000  # Convert to seconds
-                    logger.info(f"Extracted {stock_type} reset interval: {reset_intervals[stock_type]} seconds")
-                else:
-                    logger.warning(f"Could not find reset interval for {stock_type}, using default: {reset_intervals[stock_type]} seconds")
-            
-            # Look for next reset timestamps (e.g., gearNextReset = 1623079200;)
-            timestamp_patterns = {
-                'gear': r'gearNextReset\s*=\s*(\d+)\s*;',  # Unix timestamp in seconds
-                'egg': r'eggNextReset\s*=\s*(\d+)\s*;',   # Unix timestamp in seconds
-                'seeds': r'seedsNextReset\s*=\s*(\d+)\s*;' # Unix timestamp in seconds
-            }
-            
-            for stock_type, pattern in timestamp_patterns.items():
-                match = re.search(pattern, script_content)
-                if match:
-                    timestamp = int(match.group(1))
-                    next_resets[stock_type] = datetime.fromtimestamp(timestamp)
-                    logger.info(f"Extracted {stock_type} next reset: {next_resets[stock_type]}")
-                else:
-                    # Calculate next reset based on interval
-                    interval_seconds = reset_intervals[stock_type]
-                    seconds_since_epoch = int(current_time.timestamp())
-                    elapsed = seconds_since_epoch % interval_seconds
-                    seconds_until_next = interval_seconds - elapsed
-                    next_resets[stock_type] = current_time + timedelta(seconds=seconds_until_next)
-                    logger.info(f"Calculated {stock_type} next reset: {next_resets[stock_type]}")
+        # Gear and Seeds: Next 5-minute mark
+        minutes = current_time.minute
+        seconds = current_time.second
+        next_5min = (minutes + (1 if seconds > 0 else 0) + 4) // 5 * 5
+        if next_5min >= 60:
+            next_gear_seeds = current_time.replace(hour=current_time.hour + 1, minute=0, second=0, microsecond=0)
         else:
-            logger.warning("Could not find script tag with updateCountdowns, using default intervals")
-            # Calculate next resets using default intervals
-            for stock_type, interval_seconds in reset_intervals.items():
-                seconds_since_epoch = int(current_time.timestamp())
-                elapsed = seconds_since_epoch % interval_seconds
-                seconds_until_next = interval_seconds - elapsed
-                next_resets[stock_type] = current_time + timedelta(seconds=seconds_until_next)
+            next_gear_seeds = current_time.replace(minute=next_5min, second=0, microsecond=0)
+        next_resets['gear'] = next_gear_seeds
+        next_resets['seeds'] = next_gear_seeds
+        
+        # Egg: Next 30-minute mark (00 or 30 minutes)
+        if minutes < 30:
+            next_egg = current_time.replace(minute=30, second=0, microsecond=0)
+        else:
+            next_egg = current_time.replace(hour=current_time.hour + 1, minute=0, second=0, microsecond=0)
+        next_resets['egg'] = next_egg
+        
+        logger.info(f"Calculated reset times - Gear: {next_resets['gear']}, Egg: {next_resets['egg']}, Seeds: {next_resets['seeds']}")
         
         # Find the grid containing stock sections
         stock_grid = soup.find('div', class_=re.compile('grid.*grid-cols'))
@@ -151,19 +122,21 @@ def scrape_stock_data():
                 continue
                 
             items = items_list.find_all('li')
-            stock_items = []
+            # Use a dictionary to aggregate items by name
+            item_dict = {}
             
             for item in items:
                 try:
-                    # Extract name (first span's text content)
+                    # Extract name (from span, ignoring the quantity part)
                     name_span = item.find('span')
                     if not name_span:
                         logger.warning("Item name span not found")
                         continue
+                    # Get the text before the quantity span
                     name = name_span.contents[0].strip()
                     
                     # Extract quantity
-                    quantity_span = item.find('span', class_=re.compile('text-gray'))
+                    quantity_span = name_span.find('span', class_=re.compile('text-gray'))
                     if not quantity_span:
                         logger.warning(f"Quantity not found for {name}")
                         continue
@@ -174,13 +147,16 @@ def scrape_stock_data():
                         continue
                     quantity = int(quantity_match.group())
                     
-                    stock_items.append({
-                        'name': name,
-                        'quantity': quantity
-                    })
+                    # Aggregate items by name
+                    if name in item_dict:
+                        item_dict[name]['quantity'] += quantity
+                    else:
+                        item_dict[name] = {'name': name, 'quantity': quantity}
                 except Exception as e:
                     logger.error(f"Error processing item: {str(e)}")
                     continue
+            
+            stock_items = list(item_dict.values())
             
             # Assign to appropriate stock type
             if 'GEAR' in title:

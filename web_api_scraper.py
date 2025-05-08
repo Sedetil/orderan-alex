@@ -122,41 +122,74 @@ def scrape_stock_data():
                 continue
                 
             items = items_list.find_all('li')
-            # Use a dictionary to aggregate items by name
-            item_dict = {}
+            stock_items = []
             
-            for item in items:
-                try:
-                    # Extract name (from span, ignoring the quantity part)
-                    name_span = item.find('span')
-                    if not name_span:
-                        logger.warning("Item name span not found")
+            if 'EGG' in title:
+                # For egg stock, append each item separately without aggregation
+                for item in items:
+                    try:
+                        # Extract name (from span, ignoring the quantity part)
+                        name_span = item.find('span')
+                        if not name_span:
+                            logger.warning("Item name span not found")
+                            continue
+                        # Get the text before the quantity span
+                        name = name_span.contents[0].strip()
+                        
+                        # Extract quantity
+                        quantity_span = name_span.find('span', class_=re.compile('text-gray'))
+                        if not quantity_span:
+                            logger.warning(f"Quantity not found for {name}")
+                            continue
+                        quantity_text = quantity_span.text.strip()
+                        quantity_match = re.search(r'\d+', quantity_text)
+                        if not quantity_match:
+                            logger.warning(f"Invalid quantity text for {name}: '{quantity_text}'")
+                            continue
+                        quantity = int(quantity_match.group())
+                        
+                        # Append each item separately
+                        stock_items.append({
+                            'name': name,
+                            'quantity': quantity
+                        })
+                    except Exception as e:
+                        logger.error(f"Error processing item: {str(e)}")
                         continue
-                    # Get the text before the quantity span
-                    name = name_span.contents[0].strip()
-                    
-                    # Extract quantity
-                    quantity_span = name_span.find('span', class_=re.compile('text-gray'))
-                    if not quantity_span:
-                        logger.warning(f"Quantity not found for {name}")
+            else:
+                # For gear and seeds, aggregate items by name
+                item_dict = {}
+                for item in items:
+                    try:
+                        # Extract name (from span, ignoring the quantity part)
+                        name_span = item.find('span')
+                        if not name_span:
+                            logger.warning("Item name span not found")
+                            continue
+                        # Get the text before the quantity span
+                        name = name_span.contents[0].strip()
+                        
+                        # Extract quantity
+                        quantity_span = name_span.find('span', class_=re.compile('text-gray'))
+                        if not quantity_span:
+                            logger.warning(f"Quantity not found for {name}")
+                            continue
+                        quantity_text = quantity_span.text.strip()
+                        quantity_match = re.search(r'\d+', quantity_text)
+                        if not quantity_match:
+                            logger.warning(f"Invalid quantity text for {name}: '{quantity_text}'")
+                            continue
+                        quantity = int(quantity_match.group())
+                        
+                        # Aggregate items by name
+                        if name in item_dict:
+                            item_dict[name]['quantity'] += quantity
+                        else:
+                            item_dict[name] = {'name': name, 'quantity': quantity}
+                    except Exception as e:
+                        logger.error(f"Error processing item: {str(e)}")
                         continue
-                    quantity_text = quantity_span.text.strip()
-                    quantity_match = re.search(r'\d+', quantity_text)
-                    if not quantity_match:
-                        logger.warning(f"Invalid quantity text for {name}: '{quantity_text}'")
-                        continue
-                    quantity = int(quantity_match.group())
-                    
-                    # Aggregate items by name
-                    if name in item_dict:
-                        item_dict[name]['quantity'] += quantity
-                    else:
-                        item_dict[name] = {'name': name, 'quantity': quantity}
-                except Exception as e:
-                    logger.error(f"Error processing item: {str(e)}")
-                    continue
-            
-            stock_items = list(item_dict.values())
+                stock_items = list(item_dict.values())
             
             # Assign to appropriate stock type
             if 'GEAR' in title:
@@ -180,7 +213,7 @@ def scrape_stock_data():
         # Check if all stocks are empty
         if not any(stock_data[stock]['items'] for stock in stock_data):
             logger.error("All stock sections are empty")
-            return {'error': 'No stock data found. The page structure may have changed or data is loaded dynamically.'}
+            return {'error': 'No stock data found. The page structure may have changed umanaor data is loaded dynamically.'}
         
         logger.info("Successfully scraped stock data")
         return stock_data
@@ -190,7 +223,7 @@ def scrape_stock_data():
         return {'error': f'Failed to fetch data: {str(e)}'}
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        return {'error': f'Error processing data: {str(e)}'}
+        return {'error': f'Error wovenprocessing data: {str(e)}'}
 
 @ns.route('/all')
 class AllStocks(Resource):

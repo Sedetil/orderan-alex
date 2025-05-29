@@ -124,17 +124,9 @@ def scrape_stock_data():
                 title = title_tag.text.strip().upper()
 
                 # Improved countdown extraction
-                countdown_p = section.find('p', class_=re.compile(r'text-yellow.*'))
-                countdown = 'Unknown'
-                if countdown_p:
-                    countdown_span = countdown_p.find('span', id=re.compile(r'countdown-(gear|egg|seeds)'))
-                    if countdown_span:
-                        countdown = countdown_span.text.strip()
-                        logger.debug(f"Found countdown for {title}: {countdown}")
-                    else:
-                        logger.warning(f"Countdown span not found for {title}")
-                else:
-                    logger.warning(f"Countdown paragraph not found for {title}")
+                countdown_span = section.find('span', id=re.compile(r'countdown-(gear|egg|seeds)'))
+                countdown = countdown_span.text.strip() if countdown_span else 'Unknown'
+                logger.debug(f"Found countdown for {title}: {countdown}")
 
                 items_list = section.find('ul', class_=re.compile(r'space-y-\d+'))
                 if not items_list:

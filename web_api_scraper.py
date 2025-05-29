@@ -7,13 +7,15 @@ import logging
 import time
 from fake_useragent import UserAgent
 from cachetools import TTLCache
+# Pastikan Anda sudah menginstal requests: pip install requests
 import requests
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+# Perbaikan kecil: Menghapus spasi berlebih pada deskripsi
 api = Api(app, version='1.3', title='Grow A Garden Stock API',
           description='API to scrape stock data from VulcanValues Grow A Garden page')
 
@@ -36,7 +38,7 @@ def scrape_stock_data():
         'User-Agent': ua.random,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate',
+        'Accept-Encoding': 'gzip, deflate, br', # Menambahkan 'br' untuk kompresi Brotli jika didukung
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
         'Cache-Control': 'no-cache',
@@ -47,43 +49,45 @@ def scrape_stock_data():
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'same-origin',
         'Sec-Fetch-User': '?1',
+        # Anda bisa mencoba memperbarui header Sec-CH-UA jika diperlukan
         'Sec-CH-UA': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
         'Sec-CH-UA-Mobile': '?0',
         'Sec-CH-UA-Platform': '"Windows"'
     }
 
-    scraper = cloudscraper.create_scraper()
+    # Menggunakan session cloudscraper untuk penanganan cookie yang lebih baik
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'mobile': False
+        }
+    )
     max_retries = 3
     retry_delay = 5
 
     for attempt in range(max_retries):
         try:
             logger.info(f"Attempt {attempt + 1}/{max_retries}: Fetching data from {url} with User-Agent: {headers['User-Agent']}")
-            time.sleep(2)
-            response = scraper.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
+            time.sleep(2) # Memberi jeda sebelum request
+            response = scraper.get(url, headers=headers, timeout=20) # Menambah timeout sedikit
+            response.raise_for_status() # Akan error jika status code bukan 2xx
             logger.info(f"Successfully fetched webpage, Status Code: {response.status_code}")
-            logger.debug(f"Response headers: {response.headers}")
 
             content_type = response.headers.get('Content-Type', '')
             if 'text/html' not in content_type.lower():
                 logger.error(f"Non-HTML response received, Content-Type: {content_type}")
-                return {
-                    'error': 'Invalid response from server.',
-                    'details': f'Received non-HTML content (Content-Type: {content_type}).',
-                    'suggestion': 'The server may be blocking access or returning unexpected data. Contact the server administrator via Discord (https://discord.gg/kEpjAJQdPH).'
-                }
+                return {'error': 'Invalid response type.', 'details': f'Content-Type: {content_type}'}
 
-            logger.debug(f"HTML received: {response.text[:2000]}")
-            soup = BeautifulSoup(response.text, 'lxml')  # Use lxml parser
+            # Menyimpan HTML untuk debug (hapus atau komentari di produksi)
+            # with open("debug_response.html", "w", encoding="utf-8") as f:
+            #     f.write(response.text)
 
-            if 'cf-browser-verification' in response.text or 'checking your browser' in response.text.lower():
+            soup = BeautifulSoup(response.text, 'lxml') # Pastikan lxml terinstal: pip install lxml
+
+            if 'cf-browser-verification' in response.text or 'checking your browser' in response.text.lower() or 'Just a moment...' in response.text:
                 logger.error("Cloudflare verification page detected")
-                return {
-                    'error': 'Blocked by Cloudflare verification.',
-                    'details': 'The server requires browser verification, which cannot be bypassed with current setup.',
-                    'suggestion': 'Try using a proxy or contact the server administrator via Discord (https://discord.gg/kEpjAJQdPH).'
-                }
+                return {'error': 'Blocked by Cloudflare.'}
 
             stock_data = {
                 'gear_stock': {'items': [], 'updates_in': 'Unknown'},
@@ -91,50 +95,63 @@ def scrape_stock_data():
                 'seeds_stock': {'items': [], 'updates_in': 'Unknown'}
             }
 
+            # Mencari grid utama
             stock_grid = soup.find('div', class_=re.compile(r'grid.*grid-cols'))
             if not stock_grid:
-                stock_grid = None
-                for div in soup.find_all('div'):
+                logger.warning("Primary stock grid not found, attempting fallback...")
+                # Fallback: Cari div mana saja yang mengandung salah satu h2
+                all_divs = soup.find_all('div')
+                for div in all_divs:
                     if div.find('h2', text=re.compile(r'GEAR STOCK|EGG STOCK|SEEDS STOCK', re.I)):
-                        stock_grid = div
-                        break
+                        # Cek apakah div ini adalah grid atau parentnya
+                        if 'grid' in div.get('class', []):
+                           stock_grid = div
+                           break
+                        elif div.find('div', class_=re.compile(r'grid.*grid-cols')):
+                           stock_grid = div.find('div', class_=re.compile(r'grid.*grid-cols'))
+                           break
                 if not stock_grid:
-                    logger.error("Stock grid not found, even with fallback")
-                    return {
-                        'error': 'Stock grid not found on the page.',
-                        'details': 'The page structure may differ, or data is loaded dynamically.',
-                        'suggestion': 'Verify the website content in a browser or contact the server administrator via Discord (https://discord.gg/kEpjAJQdPH).'
-                    }
+                     logger.error("Stock grid not found, even with fallback.")
+                     return {'error': 'Stock grid not found.'}
 
-            logger.info("Found stock grid")
+
+            logger.info("Found stock grid. Processing sections...")
+            # Mengambil semua div anak langsung dari stock_grid
             stock_sections = stock_grid.find_all('div', recursive=False)
-            if not stock_sections:
-                logger.error("No stock sections found in grid")
-                return {
-                    'error': 'No stock sections found in grid.',
-                    'details': 'The page structure may have changed.',
-                    'suggestion': 'Verify the website content or contact the server administrator.'
-                }
 
+            if not stock_sections:
+                 logger.error("No stock sections found within the grid.")
+                 # Jika gagal, coba cari semua div di dalam grid, mungkin strukturnya berubah
+                 stock_sections = stock_grid.find_all('div')
+                 if not stock_sections:
+                     return {'error': 'No stock sections found.'}
+
+
+            found_any_section = False
             for section in stock_sections:
                 title_tag = section.find('h2')
-                if not title_tag:
-                    logger.warning("Section title not found")
+                if not title_tag or not title_tag.text.strip():
+                    # Lewati div yang tidak memiliki H2 atau H2 kosong
                     continue
+
                 title = title_tag.text.strip().upper()
 
-                # Improved countdown extraction
+                # ----> INILAH BAGIAN YANG MENGAMBIL 'UPDATES IN' <----
+                # Mencari tag <p> dengan class 'text-yellow...'
                 countdown_p = section.find('p', class_=re.compile(r'text-yellow.*'))
                 countdown = 'Unknown'
                 if countdown_p:
+                    # Mencari tag <span> dengan id 'countdown-...' di dalam <p>
                     countdown_span = countdown_p.find('span', id=re.compile(r'countdown-(gear|egg|seeds)'))
                     if countdown_span:
+                        # Mengambil teks dari span, ini adalah nilai countdown
                         countdown = countdown_span.text.strip()
-                        logger.debug(f"Found countdown for {title}: {countdown}")
+                        logger.info(f"Found countdown for {title}: {countdown}")
                     else:
                         logger.warning(f"Countdown span not found for {title}")
                 else:
                     logger.warning(f"Countdown paragraph not found for {title}")
+                # ----> AKHIR BAGIAN PENGAMBILAN 'UPDATES IN' <----
 
                 items_list = section.find('ul', class_=re.compile(r'space-y-\d+'))
                 if not items_list:
@@ -142,27 +159,24 @@ def scrape_stock_data():
                     continue
 
                 items = items_list.find_all('li', class_=re.compile(r'bg-gray-\d+'))
-                stock_items = []
-
-                # Aggregate all items (including eggs) to handle duplicates
                 item_dict = {}
+
                 for item in items:
                     try:
                         name_span = item.find('span')
-                        if not name_span:
-                            logger.warning("Item name span not found")
-                            continue
-                        name = name_span.contents[0].strip()
+                        if not name_span: continue
 
-                        quantity_span = name_span.find('span', class_=re.compile(r'text-gray'))
-                        if not quantity_span:
-                            logger.warning(f"Quantity not found for {name}")
-                            continue
+                        # Mencoba mengambil nama dengan lebih hati-hati
+                        name_text_node = name_span.find(text=True, recursive=False)
+                        name = name_text_node.strip() if name_text_node else 'Unknown Item'
+
+                        quantity_span = item.find('span', class_=re.compile(r'text-gray'))
+                        if not quantity_span: continue
+
                         quantity_text = quantity_span.text.strip()
                         quantity_match = re.search(r'\d+', quantity_text)
-                        if not quantity_match:
-                            logger.warning(f"Invalid quantity text for {name}: '{quantity_text}'")
-                            continue
+                        if not quantity_match: continue
+
                         quantity = int(quantity_match.group())
 
                         if name in item_dict:
@@ -170,48 +184,52 @@ def scrape_stock_data():
                         else:
                             item_dict[name] = {'name': name, 'quantity': quantity}
                     except Exception as e:
-                        logger.error(f"Error processing item: {str(e)}")
+                        logger.error(f"Error processing an item in {title}: {str(e)} - HTML: {item}")
                         continue
+
                 stock_items = list(item_dict.values())
 
                 if 'GEAR' in title:
                     stock_data['gear_stock'] = {'items': stock_items, 'updates_in': countdown}
+                    found_any_section = True
                 elif 'EGG' in title:
                     stock_data['egg_stock'] = {'items': stock_items, 'updates_in': countdown}
+                    found_any_section = True
                 elif 'SEEDS' in title:
                     stock_data['seeds_stock'] = {'items': stock_items, 'updates_in': countdown}
-                else:
-                    logger.warning(f"Unknown stock section: {title}")
+                    found_any_section = True
+                # else: # Jangan log ini kecuali Anda yakin tidak ada div lain
+                #    logger.warning(f"Unknown stock section title: {title}")
 
-            if not any(stock_data[stock]['items'] for stock in stock_data):
-                logger.error("All stock sections are empty")
-                return {
-                    'error': 'No stock data found.',
-                    'details': 'The page structure may have changed or data is not available.',
-                    'suggestion': 'Verify the website content or contact the server administrator via Discord (https://discord.gg/kEpjAJQdPH).'
-                }
+            if not found_any_section or not any(stock_data[stock]['items'] for stock in stock_data):
+                logger.error("No valid stock data could be extracted.")
+                return {'error': 'No stock data found (extraction failed).'}
 
-            logger.info("Successfully scraped stock data")
+            logger.info("Successfully scraped and processed stock data")
             cache[cache_key] = stock_data
             return stock_data
 
-        except Exception as e:
-            logger.error(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}, Status Code: {response.status_code if 'response' in locals() else 'N/A'}")
-            logger.debug(f"Response content (if available): {response.text[:2000] if 'response' in locals() else 'N/A'}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request failed on attempt {attempt + 1}: {str(e)}")
             if attempt < max_retries - 1:
-                headers['User-Agent'] = ua.random
-                logger.info(f"Retrying after {retry_delay} seconds with new User-Agent: {headers['User-Agent']}")
+                headers['User-Agent'] = ua.random # Ganti User-Agent untuk percobaan berikutnya
+                logger.info(f"Retrying after {retry_delay} seconds...")
                 time.sleep(retry_delay)
             else:
-                error_msg = 'Failed to fetch or parse data after multiple attempts.'
-                logger.error(error_msg)
-                return {
-                    'error': error_msg,
-                    'details': f'{str(e)}. The server may have returned invalid or non-HTML data.',
-                    'suggestion': 'Try using a proxy, verify the website content in a browser, or contact the server administrator via Discord (https://discord.gg/kEpjAJQdPH).'
-                }
+                return {'error': 'Failed to fetch data after multiple attempts.', 'details': str(e)}
+        except Exception as e:
+            # Menangkap error umum lainnya
+            logger.error(f"An unexpected error occurred on attempt {attempt + 1}: {str(e)}", exc_info=True)
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                return {'error': 'An unexpected error occurred.', 'details': str(e)}
 
-# Flask endpoints
+    # Jika loop selesai tanpa return (seharusnya tidak terjadi, tapi sebagai cadangan)
+    return {'error': 'Scraping failed after all retries.'}
+
+
+# Flask endpoints (Tidak ada perubahan di sini)
 @ns.route('/all')
 class AllStocks(Resource):
     @ns.doc('get_all_stocks', description='Retrieve all stock data (gear, egg, and seeds) from VulcanValues')
@@ -245,4 +263,6 @@ class SeedsStock(Resource):
         return jsonify(data.get('seeds_stock', {'items': [], 'updates_in': 'Unknown'}))
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Pastikan Anda menjalankan ini di lingkungan yang mendukung Flask.
+    # Untuk deployment, gunakan server WSGI seperti Gunicorn atau uWSGI.
+    app.run(host='0.0.0.0', port=5000, debug=False) # Gunakan debug=False di produksi

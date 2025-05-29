@@ -8,6 +8,7 @@ import time
 from fake_useragent import UserAgent
 from cachetools import TTLCache
 import requests
+from datetime import datetime, timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,6 +23,38 @@ ns = api.namespace('stocks', description='Stock operations')
 
 # Initialize cache (TTL 5 minutes)
 cache = TTLCache(maxsize=100, ttl=300)
+
+def calculate_countdown():
+    """Calculate countdown for gear, egg, and seeds stock based on current time."""
+    now = datetime.now()
+    
+    # Gear and Seeds: Next 5-minute interval
+    minutes = now.minute
+    seconds = now.second
+    next_5_min = now.replace(second=0, microsecond=0)
+    next_5_min += timedelta(minutes=(5 - minutes % 5) % 5)
+    if minutes % 5 == 0 and seconds == 0:
+        next_5_min += timedelta(minutes=5)
+    
+    dist_5 = next_5_min - now
+    m5 = dist_5.seconds // 60
+    s5 = dist_5.seconds % 60
+    gear_seeds_countdown = f"{m5:02d}m {s5:02d}s"
+    
+    # Egg: Next 30-minute mark
+    next_half_hour = now.replace(second=0, microsecond=0)
+    if now.minute < 30:
+        next_half_hour = next_half_hour.replace(minute=30)
+    else:
+        next_half_hour = next_half_hour.replace(hour=now.hour + 1, minute=0)
+    
+    dist_egg = next_half_hour - now
+    h_egg = dist_egg.seconds // 3600
+    m_egg = (dist_egg.seconds % 3600) // 60
+    s_egg = dist_egg.seconds % 60
+    egg_countdown = f"{h_egg:02d}h {m_egg:02d}m {s_egg:02d}s"
+    
+    return gear_seeds_countdown, egg_countdown
 
 def scrape_stock_data():
     """Scrape stock data from VulcanValues with retry, caching, and robust grid detection."""
@@ -56,6 +89,9 @@ def scrape_stock_data():
     max_retries = 3
     retry_delay = 5
 
+    # Calculate countdowns
+    gear_seeds_countdown, egg_countdown = calculate_countdown()
+
     for attempt in range(max_retries):
         try:
             logger.info(f"Attempt {attempt + 1}/{max_retries}: Fetching data from {url} with User-Agent: {headers['User-Agent']}")
@@ -86,9 +122,9 @@ def scrape_stock_data():
                 }
 
             stock_data = {
-                'gear_stock': {'items': [], 'updates_in': 'Unknown'},
-                'egg_stock': {'items': [], 'updates_in': 'Unknown'},
-                'seeds_stock': {'items': [], 'updates_in': 'Unknown'}
+                'gear_stock': {'items': [], 'updates_in': gear_seeds_countdown},
+                'egg_stock': {'items': [], 'updates_in': egg_countdown},
+                'seeds_stock': {'items': [], 'updates_in': gear_seeds_countdown}
             }
 
             stock_grid = soup.find('div', class_=re.compile(r'grid.*grid-cols'))
@@ -122,11 +158,6 @@ def scrape_stock_data():
                     logger.warning("Section title not found")
                     continue
                 title = title_tag.text.strip().upper()
-
-                # Improved countdown extraction
-                countdown_span = section.find('span', id=re.compile(r'countdown-(gear|egg|seeds)'))
-                countdown = countdown_span.text.strip() if countdown_span else 'Unknown'
-                logger.debug(f"Found countdown for {title}: {countdown}")
 
                 items_list = section.find('ul', class_=re.compile(r'space-y-\d+'))
                 if not items_list:
@@ -167,11 +198,11 @@ def scrape_stock_data():
                 stock_items = list(item_dict.values())
 
                 if 'GEAR' in title:
-                    stock_data['gear_stock'] = {'items': stock_items, 'updates_in': countdown}
+                    stock_data['gear_stock'] = {'items': stock_items, 'updates_in': gear_seeds_countdown}
                 elif 'EGG' in title:
-                    stock_data['egg_stock'] = {'items': stock_items, 'updates_in': countdown}
+                    stock_data['egg_stock'] = {'items': stock_items, 'updates_in': egg_countdown}
                 elif 'SEEDS' in title:
-                    stock_data['seeds_stock'] = {'items': stock_items, 'updates_in': countdown}
+                    stock_data['seeds_stock'] = {'items': stock_items, 'updates_in': gear_seeds_countdown}
                 else:
                     logger.warning(f"Unknown stock section: {title}")
 

@@ -8,8 +8,7 @@ import time
 from fake_useragent import UserAgent
 from cachetools import TTLCache
 import requests
-from datetime import datetime
-import dateutil.parser
+from datetime import datetime, timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -25,15 +24,10 @@ ns = api.namespace('stocks', description='Stock operations')
 # Initialize cache (TTL 5 minutes)
 cache = TTLCache(maxsize=100, ttl=300)
 
-def calculate_countdown(server_time):
-    """Calculate countdown for gear, egg, and seeds stock based on server time."""
-    # Parse server time from HTTP Date header
-    try:
-        now = dateutil.parser.parse(server_time)
-    except (ValueError, TypeError) as e:
-        logger.warning(f"Failed to parse server time: {e}. Falling back to local time.")
-        now = datetime.now()
-
+def calculate_countdown():
+    """Calculate countdown for gear, egg, and seeds stock based on current time."""
+    now = datetime.now()
+    
     # Gear and Seeds: Next 5-minute interval
     minutes = now.minute
     seconds = now.second
@@ -95,6 +89,9 @@ def scrape_stock_data():
     max_retries = 3
     retry_delay = 5
 
+    # Calculate countdowns
+    gear_seeds_countdown, egg_countdown = calculate_countdown()
+
     for attempt in range(max_retries):
         try:
             logger.info(f"Attempt {attempt + 1}/{max_retries}: Fetching data from {url} with User-Agent: {headers['User-Agent']}")
@@ -103,11 +100,6 @@ def scrape_stock_data():
             response.raise_for_status()
             logger.info(f"Successfully fetched webpage, Status Code: {response.status_code}")
             logger.debug(f"Response headers: {response.headers}")
-
-            # Get server time from Date header
-            server_time = response.headers.get('Date')
-            logger.debug(f"Server time: {server_time}")
-            gear_seeds_countdown, egg_countdown = calculate_countdown(server_time)
 
             content_type = response.headers.get('Content-Type', '')
             if 'text/html' not in content_type.lower():
